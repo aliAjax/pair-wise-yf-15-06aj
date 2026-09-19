@@ -21,3 +21,7 @@ coverage/
 *.log
 __pycache__/
 *.py[cod]
+
+# 验证脚本生成的临时 bundle
+scripts/store-bundle.mjs
+scripts/verify-bundle.mjs

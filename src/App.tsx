@@ -1,126 +1,196 @@
+import { useMemo, useState } from "react";
 import "./styles.css";
+import type { Sample, Stage } from "./types";
+import { resetAll, useStore } from "./lib/store";
+import { pushToast, useToasts } from "./lib/toast";
+import { avgTemp } from "./lib/domain";
+import BatchPanel from "./components/BatchPanel";
+import SamplesPanel from "./components/SamplesPanel";
+import CasesPanel from "./components/CasesPanel";
+import TemperatureChart from "./components/TemperatureChart";
+import Modal from "./components/Modal";
+import SampleDetailCard from "./components/SampleDetailCard";
 
-const project = {
-  "sourceNo": 5,
-  "id": "hxyfront-62003",
-  "port": 62003,
-  "title": "法医昆虫学样本记录",
-  "domain": "法医昆虫学",
-  "prompt": "做一个法医昆虫学样本记录前端工具，用来记录采样地点、环境温度、尸体暴露阶段、昆虫种类、发育阶段、采样时间、保存方式和鉴定备注。页面需要有样本批次列表、发育阶段筛选、温度记录图、案件样本关联页和单个样本详情卡片。",
-  "palette": [
-    "#365314",
-    "#a16207",
-    "#dc2626"
-  ],
-  "metrics": [
-    "样本批次",
-    "平均温度",
-    "发育阶段",
-    "待鉴定"
-  ],
-  "filters": [
-    "卵",
-    "幼虫",
-    "蛹",
-    "成虫"
-  ],
-  "fields": [
-    "采样地点",
-    "环境温度",
-    "暴露阶段",
-    "昆虫种类",
-    "发育阶段",
-    "保存方式"
-  ],
-  "records": [
-    [
-      "CASE-042-A",
-      "室外草地",
-      "幼虫三龄，28.6℃",
-      "乙醇保存"
-    ],
-    [
-      "CASE-042-B",
-      "阴影区域",
-      "蛹期样本",
-      "需复核种属"
-    ],
-    [
-      "CASE-051-A",
-      "水沟边缘",
-      "成虫采集",
-      "已完成拍照"
-    ]
-  ]
-};
+type Tab = "batch" | "samples" | "cases" | "chart";
+
+const TABS: Array<{ key: Tab; label: string }> = [
+  { key: "batch", label: "批次封存" },
+  { key: "samples", label: "样本工作台" },
+  { key: "cases", label: "案件样本关联" },
+  { key: "chart", label: "温度记录图" },
+];
 
 function App() {
+  const state = useStore();
+  const toasts = useToasts();
+  const [tab, setTab] = useState<Tab>("batch");
+  const [stageFilter, setStageFilter] = useState<Stage | "">("");
+  const [chartCase, setChartCase] = useState<string>("");
+  const [detail, setDetail] = useState<Sample | null>(null);
+  const [editing, setEditing] = useState<Sample | null>(null);
+
+  const metrics = useMemo(() => {
+    const identified = state.samples.filter((s) => s.stage !== "");
+    return {
+      batches: state.batches.length,
+      avg: avgTemp(state.samples),
+      stages: new Set(identified.map((s) => s.stage)).size,
+      pending: state.samples.filter((s) => s.status === "pending").length,
+      sealed: state.samples.filter((s) => s.status === "sealed").length,
+      reviewing: state.samples.filter((s) => s.status === "reviewing").length,
+      paused: state.batches.filter((b) => b.status === "unsealed").length,
+    };
+  }, [state]);
+
+  const chartSamples = state.samples.filter(
+    (s) =>
+      (stageFilter === "" || s.stage === stageFilter) &&
+      (chartCase === "" || s.caseId === chartCase)
+  );
+
+  // 详情弹窗始终展示最新数据
+  const liveDetail = detail ? state.samples.find((s) => s.id === detail.id) ?? null : null;
+
   return (
     <main className="app">
       <section className="hero">
-        <p>{project.id} · 源提示词{project.sourceNo} · Port {project.port}</p>
-        <h1>{project.title}</h1>
-        <span>{project.prompt}</span>
+        <p>hxyfront-62003 · 源提示词5 · Port 62003</p>
+        <h1>法医昆虫学样本记录 · 补批次鉴定封存</h1>
+        <span>
+          昆虫种类、发育阶段、鉴定结论、保存方式四项齐全方可随批次提交；封存时同一案件、相同地点且采样时间重叠的样本退回待复核，
+          原批次与已有封存记录不变。封存样本被复核退回时批次立即解封、暂停导出，处理后重查采样时间通过方可恢复封存。
+          批次、案件关联与温度记录本地保存，刷新后仍在。
+        </span>
       </section>
 
       <section className="metrics">
-        {project.metrics.map((metric: string, index: number) => (
-          <article key={metric}>
-            <small>{metric}</small>
-            <strong>{[86, 14, 7, 32][index] ?? 12}</strong>
-          </article>
-        ))}
+        <article>
+          <small>样本批次</small>
+          <strong>{metrics.batches}</strong>
+        </article>
+        <article>
+          <small>平均温度</small>
+          <strong>{metrics.avg}℃</strong>
+        </article>
+        <article>
+          <small>发育阶段（类）</small>
+          <strong>{metrics.stages}</strong>
+        </article>
+        <article>
+          <small>待鉴定 / 已封存</small>
+          <strong>
+            {metrics.pending}
+            <em className="metric-sub"> / {metrics.sealed}</em>
+          </strong>
+        </article>
       </section>
 
-      <section className="workspace">
-        <aside className="panel">
-          <h2>{project.domain}筛选</h2>
-          <div className="chips">
-            {project.filters.map((item: string) => (
-              <button key={item}>{item}</button>
-            ))}
-          </div>
-        </aside>
+      {(metrics.reviewing > 0 || metrics.paused > 0) && (
+        <div className="global-banner">
+          ⚠ 当前有 {metrics.reviewing} 个样本待复核，{metrics.paused} 个批次已解封并暂停导出；处理完成并通过采样时间重查后自动恢复封存。
+        </div>
+      )}
 
-        <section className="panel form-panel">
+      <nav className="tabs">
+        {TABS.map((t) => (
+          <button key={t.key} className={tab === t.key ? "tab active" : "tab"} onClick={() => setTab(t.key)}>
+            {t.label}
+          </button>
+        ))}
+        <span className="member-spacer" />
+        <button
+          className="mini"
+          onClick={() => {
+            const r = resetAll();
+            pushToast(r.message, r.ok);
+          }}
+        >
+          恢复演示数据
+        </button>
+      </nav>
+
+      {tab === "batch" && <BatchPanel state={state} onOpenSample={setDetail} />}
+      {tab === "samples" && (
+        <SamplesPanel
+          state={state}
+          stageFilter={stageFilter}
+          setStageFilter={setStageFilter}
+          onOpenSample={setDetail}
+          editing={editing}
+          setEditing={setEditing}
+        />
+      )}
+      {tab === "cases" && <CasesPanel state={state} onOpenSample={setDetail} />}
+      {tab === "chart" && (
+        <section className="panel">
           <div className="heading">
             <div>
-              <p>专业字段</p>
-              <h2>新增记录</h2>
+              <p>环境温度</p>
+              <h2>温度记录图（按采样时间）</h2>
             </div>
-            <button className="primary">保存草稿</button>
           </div>
-          <div className="field-grid">
-            {project.fields.map((field: string) => (
-              <label key={field}>
-                <span>{field}</span>
-                <input placeholder={"填写" + field} />
-              </label>
-            ))}
+          <div className="filter-row">
+            <span className="muted small">发育阶段：</span>
+            <div className="chips">
+              {(["", "卵", "幼虫", "蛹", "成虫"] as Array<Stage | "">).map((s) => (
+                <button
+                  key={s || "all"}
+                  className={stageFilter === s ? "chip-active" : ""}
+                  onClick={() => setStageFilter(s)}
+                >
+                  {s || "全部"}
+                </button>
+              ))}
+            </div>
+            <span className="muted small">案件：</span>
+            <select value={chartCase} onChange={(e) => setChartCase(e.target.value)}>
+              <option value="">全部案件</option>
+              {state.cases.map((c) => (
+                <option key={c} value={c}>
+                  {c}
+                </option>
+              ))}
+            </select>
           </div>
+          <TemperatureChart samples={chartSamples} />
         </section>
-      </section>
+      )}
 
-      <section className="panel">
-        <div className="heading">
-          <div>
-            <p>历史记录</p>
-            <h2>近期工作台</h2>
+      {liveDetail && (
+        <Modal title="单个样本详情卡片" onClose={() => setDetail(null)} wide>
+          <SampleDetailCard sample={liveDetail}>
+            {(liveDetail.status === "pending" || liveDetail.status === "ready") && (
+              <button
+                className="primary"
+                onClick={() => {
+                  setEditing(liveDetail);
+                  setTab("samples");
+                  setDetail(null);
+                }}
+              >
+                去补齐鉴定信息
+              </button>
+            )}
+            {liveDetail.status === "reviewing" && (
+              <span className="muted small">
+                待复核样本请到「批次封存」页处理并执行「重查采样时间」。
+              </span>
+            )}
+          </SampleDetailCard>
+        </Modal>
+      )}
+
+      <div className="toasts">
+        {toasts.map((t) => (
+          <div key={t.id} className={t.ok ? "toast ok" : "toast err"}>
+            {t.message}
           </div>
-          <button>导出摘要</button>
-        </div>
-        <div className="records">
-          {project.records.map((record: string[], index: number) => (
-            <article key={record.join("-")}>
-              <b>{String(index + 1).padStart(2, "0")}</b>
-              <div>
-                <h3>{record[0]}</h3>
-                <p>{record.slice(1).join(" · ")}</p>
-              </div>
-            </article>
-          ))}
-        </div>
-      </section>
+        ))}
+      </div>
+
+      <footer className="page-foot muted small">
+        批次列表、案件关联与温度图共享同一份数据并通过 localStorage 本地保存，刷新页面后仍在。
+      </footer>
     </main>
   );
 }
